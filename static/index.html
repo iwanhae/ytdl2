@@ -244,6 +244,27 @@
         background: #c82333;
       }
 
+      .extract-audio-btn {
+        padding: 8px 16px;
+        background: #17a2b8;
+        color: white;
+        text-decoration: none;
+        border-radius: 4px;
+        font-size: 14px;
+        border: none;
+        cursor: pointer;
+        margin-left: 8px;
+      }
+
+      .extract-audio-btn:hover {
+        background: #138496;
+      }
+
+      .extract-audio-btn:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+
       .file-actions {
         display: flex;
         align-items: center;
@@ -533,42 +554,90 @@
           return;
         }
 
-        // Sort files by modification time (newest first)
-        const sortedFiles = [...files].sort((a, b) => {
-          const timeA = new Date(a.mod_time).getTime();
-          const timeB = new Date(b.mod_time).getTime();
+        // Group files by base name (without extension)
+        const fileGroups = new Map();
+
+        files.forEach((file) => {
+          const ext = file.name.substring(file.name.lastIndexOf("."));
+          const baseName = file.name.substring(0, file.name.lastIndexOf("."));
+
+          if (!fileGroups.has(baseName)) {
+            fileGroups.set(baseName, {
+              baseName: baseName,
+              videoFile: null,
+              audioFile: null,
+              latestModTime: file.mod_time,
+            });
+          }
+
+          const group = fileGroups.get(baseName);
+
+          if (ext === ".mp3") {
+            group.audioFile = file;
+          } else {
+            group.videoFile = file;
+          }
+
+          // Update latest mod time
+          const modTime = new Date(file.mod_time).getTime();
+          const latestTime = new Date(group.latestModTime).getTime();
+          if (modTime > latestTime) {
+            group.latestModTime = file.mod_time;
+          }
+        });
+
+        // Convert to array and sort by latest modification time
+        const sortedGroups = Array.from(fileGroups.values()).sort((a, b) => {
+          const timeA = new Date(a.latestModTime).getTime();
+          const timeB = new Date(b.latestModTime).getTime();
           return timeB - timeA; // Descending order (newest first)
         });
 
         noFiles.style.display = "none";
-        container.innerHTML = sortedFiles
-          .map(
-            (file) => `
+        container.innerHTML = sortedGroups
+          .map((group) => {
+            // Prefer video file for display, fallback to audio
+            const displayFile = group.videoFile || group.audioFile;
+            const hasAudio = !!group.audioFile;
+            const hasVideo = !!group.videoFile;
+
+            return `
                  <div class="file-card">
                      <div class="file-info">
-                         <div class="file-name">📄 ${escapeHtml(
-                           file.name
-                         )}</div>
+                         <div class="file-name">
+                             ${escapeHtml(displayFile.name)}
+                         </div>
                          <div>
                              <span class="file-size">${formatFileSize(
-                               file.size
+                               displayFile.size
                              )}</span>
                              <span class="file-time">다운로드: ${formatTime(
-                               file.mod_time
+                               displayFile.mod_time
                              )}</span>
                          </div>
                      </div>
                      <div class="file-actions">
                          <a href="${API_BASE}/files/${encodeURIComponent(
-              file.name
+              displayFile.name
             )}" class="download-btn">다운로드</a>
+                        ${
+                          hasVideo
+                            ? hasAudio
+                              ? `<a href="${API_BASE}/files/${encodeURIComponent(
+                                  group.audioFile.name
+                                )}" class="extract-audio-btn" style="text-decoration: none;">오디오</a>`
+                              : `<button class="extract-audio-btn" data-filename="${escapeHtml(
+                                  displayFile.name
+                                )}" data-has-audio="false">오디오 추출</button>`
+                            : ""
+                        }
                          <button class="delete-btn" data-filename="${escapeHtml(
-                           file.name
+                           displayFile.name
                          )}">삭제</button>
                      </div>
                  </div>
-             `
-          )
+             `;
+          })
           .join("");
 
         // Add event listeners for delete buttons
@@ -597,6 +666,53 @@
             }
           });
         });
+
+        // Add event listeners for extract audio buttons (only for buttons, not links)
+        container
+          .querySelectorAll(".extract-audio-btn[data-has-audio='false']")
+          .forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              const filename = btn.dataset.filename;
+              btn.disabled = true;
+              btn.textContent = "변환 중...";
+
+              try {
+                const response = await fetch(
+                  `${API_BASE}/files/${encodeURIComponent(
+                    filename
+                  )}/extract-audio`,
+                  {
+                    method: "POST",
+                  }
+                );
+
+                const data = await response.json();
+
+                if (response.ok) {
+                  if (data.status === "exists") {
+                    // MP3 file already exists, download it
+                    window.location.href = data.download_url;
+                    setTimeout(() => {
+                      updateFileList();
+                    }, 500);
+                  } else {
+                    // Audio extraction started - SSE will update the list
+                    setTimeout(() => {
+                      updateFileList();
+                    }, 500);
+                  }
+                } else {
+                  console.error("오디오 추출 실패:", data.error);
+                  btn.disabled = false;
+                  btn.textContent = "오디오 추출";
+                }
+              } catch (error) {
+                console.error("오디오 추출 실패:", error);
+                btn.disabled = false;
+                btn.textContent = "오디오 추출";
+              }
+            });
+          });
       }
 
       // Utils

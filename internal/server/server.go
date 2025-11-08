@@ -310,9 +310,10 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleFileOperation handles file download and deletion
+// handleFileOperation handles file download, deletion, and audio extraction
 // GET /api/files/{filename} - Download file
 // DELETE /api/files/{filename} - Delete file
+// POST /api/files/{filename}/extract-audio - Extract audio to MP3
 func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 	// Extract filename from path: /api/files/{filename}
 	path := strings.TrimPrefix(r.URL.Path, "/api/files/")
@@ -321,6 +322,13 @@ func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": "Filename is required",
 		})
+		return
+	}
+
+	// Check if this is an extract-audio request
+	if strings.HasSuffix(path, "/extract-audio") {
+		filename := strings.TrimSuffix(path, "/extract-audio")
+		s.handleExtractAudio(w, r, filename)
 		return
 	}
 
@@ -543,4 +551,123 @@ func (s *Server) handleCommandLogsStream(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
+}
+
+// POST /api/files/{filename}/extract-audio
+// Extracts audio from video file to MP3 format
+// If MP3 already exists, returns its info
+// Process is tracked like download commands with SSE
+func (s *Server) handleExtractAudio(w http.ResponseWriter, r *http.Request, filename string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Method not allowed",
+		})
+		return
+	}
+
+	// Security: prevent directory traversal
+	if strings.Contains(filename, "..") {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Invalid filename",
+		})
+		return
+	}
+
+	// Get source file path
+	sourceFilePath := filepath.Join(s.DownloadDirectory, filename)
+
+	// Check if source file exists
+	if _, err := os.Stat(sourceFilePath); os.IsNotExist(err) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Source file not found",
+		})
+		return
+	}
+
+	// Generate MP3 filename (replace extension with .mp3)
+	ext := filepath.Ext(filename)
+	mp3Filename := strings.TrimSuffix(filename, ext) + ".mp3"
+	mp3FilePath := filepath.Join(s.DownloadDirectory, mp3Filename)
+
+	// Check if MP3 already exists
+	if info, err := os.Stat(mp3FilePath); err == nil {
+		// MP3 exists, return its info
+		log.Printf("MP3 file already exists: %s", mp3Filename)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":       "exists",
+			"message":      "MP3 file already exists",
+			"filename":     mp3Filename,
+			"size":         info.Size(),
+			"download_url": fmt.Sprintf("/api/files/%s", mp3Filename),
+		})
+		return
+	}
+
+	// MP3 doesn't exist, extract audio using ffmpeg
+	log.Printf("Extracting audio from %s to %s...", filename, mp3Filename)
+
+	// Run ffmpeg command
+	// ffmpeg -i input.mp4 -vn -acodec libmp3lame -q:a 2 output.mp3
+	cmd := command.
+		New("ffmpeg", "-i", sourceFilePath, "-vn", "-acodec", "libmp3lame", "-q:a", "2", mp3FilePath, "-y")
+
+	if err := cmd.Execute(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		log.Printf("Error executing ffmpeg: %v", err)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": fmt.Sprintf("Failed to extract audio: %v", err),
+		})
+		return
+	}
+
+	// Register command
+	cmdID := s.nextCommandID()
+	cmdInfo := &CommandInfo{
+		ID:        cmdID,
+		URL:       fmt.Sprintf("Extract audio: %s", filename),
+		Status:    "running",
+		StartedAt: time.Now(),
+		Command:   cmd,
+	}
+
+	s.commandsMu.Lock()
+	s.commands[cmdID] = cmdInfo
+	s.commandsMu.Unlock()
+
+	// Broadcast new command
+	s.broadcastCommandUpdate()
+
+	// Monitor command completion
+	go func() {
+		for line := range cmd.StdoutChannel() {
+			fmt.Println(line)
+		}
+		// Wait for command to finish
+		cmd.Wait()
+		exitCode := cmd.ExitCode()
+
+		s.commandsMu.Lock()
+		if exitCode == 0 {
+			cmdInfo.Status = "completed"
+		} else {
+			cmdInfo.Status = "failed"
+		}
+		cmdInfo.ExitCode = exitCode
+		s.commandsMu.Unlock()
+
+		// Broadcast command completion
+		s.broadcastCommandUpdate()
+	}()
+
+	w.WriteHeader(http.StatusOK)
+	response := map[string]string{
+		"status": "ok",
+		"id":     cmdID,
+	}
+	json.NewEncoder(w).Encode(response)
 }
