@@ -27,26 +27,30 @@ type CommandInfo struct {
 type Server struct {
 	*http.ServeMux
 
-	DownloadDirectory string
-	commands          map[string]*CommandInfo
-	commandsMu        sync.RWMutex
-	commandCounter    int
-	counterMu         sync.Mutex
+	DownloadDirectory   string
+	commands            map[string]*CommandInfo
+	commandsMu          sync.RWMutex
+	commandCounter      int
+	counterMu           sync.Mutex
+	commandsSubscribers map[chan string]bool
+	commandsSubMu       sync.RWMutex
 }
 
 func NewServer(downloadDirectory string) *Server {
 	mux := http.NewServeMux()
 	s := &Server{
-		ServeMux:          mux,
-		DownloadDirectory: downloadDirectory,
-		commands:          make(map[string]*CommandInfo),
+		ServeMux:            mux,
+		DownloadDirectory:   downloadDirectory,
+		commands:            make(map[string]*CommandInfo),
+		commandsSubscribers: make(map[chan string]bool),
 	}
 	// API routes (must be registered before static file server)
 	s.HandleFunc("/api/yt-dlp", s.handleYtDlp)
 	s.HandleFunc("/api/commands", s.handleCommands)
+	s.HandleFunc("/api/commands/stream", s.handleCommandsStream)
 	s.HandleFunc("/api/commands/", s.handleCommandLogs)
 	s.HandleFunc("/api/files", s.handleFiles)
-	s.HandleFunc("/api/files/", s.handleFileDownload)
+	s.HandleFunc("/api/files/", s.handleFileOperation)
 
 	// Serve static files for non-API routes
 	staticFS := http.FileServer(http.Dir("./static"))
@@ -117,6 +121,9 @@ func (s *Server) handleYtDlp(w http.ResponseWriter, r *http.Request) {
 	s.commands[cmdID] = cmdInfo
 	s.commandsMu.Unlock()
 
+	// Broadcast new command
+	s.broadcastCommandUpdate()
+
 	// Monitor command completion
 	go func() {
 		for line := range cmd.StdoutChannel() {
@@ -134,6 +141,9 @@ func (s *Server) handleYtDlp(w http.ResponseWriter, r *http.Request) {
 		}
 		cmdInfo.ExitCode = exitCode
 		s.commandsMu.Unlock()
+
+		// Broadcast command completion
+		s.broadcastCommandUpdate()
 	}()
 
 	w.WriteHeader(http.StatusOK)
@@ -199,13 +209,22 @@ func (s *Server) handleCommandLogs(w http.ResponseWriter, r *http.Request) {
 
 	cmdID := parts[0]
 
-	// Check if path ends with /logs (optional, but more explicit)
-	if len(parts) > 1 && parts[1] != "logs" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Invalid path. Expected /api/commands/{id}/logs",
-		})
-		return
+	// Check if path ends with /logs or /logs/stream
+	if len(parts) > 1 {
+		if parts[1] == "logs" {
+			if len(parts) > 2 && parts[2] == "stream" {
+				// Handle SSE streaming
+				s.handleCommandLogsStream(w, r, cmdID)
+				return
+			}
+			// Continue with regular logs
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "Invalid path. Expected /api/commands/{id}/logs or /api/commands/{id}/logs/stream",
+			})
+			return
+		}
 	}
 
 	s.commandsMu.RLock()
@@ -291,14 +310,10 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/files/{filename}
-// Serves the file for download
-func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
+// handleFileOperation handles file download and deletion
+// GET /api/files/{filename} - Download file
+// DELETE /api/files/{filename} - Delete file
+func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 	// Extract filename from path: /api/files/{filename}
 	path := strings.TrimPrefix(r.URL.Path, "/api/files/")
 	if path == "" {
@@ -310,7 +325,7 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Security: prevent directory traversal
-	if strings.Contains(path, "..") || strings.Contains(path, "/") {
+	if strings.Contains(path, "..") {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": "Invalid filename",
@@ -320,15 +335,202 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 
 	filePath := filepath.Join(s.DownloadDirectory, path)
 
-	// Check if file exists
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+	switch r.Method {
+	case http.MethodGet:
+		// Download file
+		// Check if file exists
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "File not found",
+			})
+			return
+		}
+		// Serve the file
+		http.ServeFile(w, r, filePath)
+
+	case http.MethodDelete:
+		// Delete file
+		// Check if file exists
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "File not found",
+			})
+			return
+		}
+
+		// Delete the file
+		if err := os.Remove(filePath); err != nil {
+			log.Printf("Failed to delete file %s: %v", filePath, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Failed to delete file: %v", err),
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "File deleted successfully",
+		})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Method not allowed",
+		})
+	}
+}
+
+// broadcastCommandUpdate sends current commands state to all subscribers
+func (s *Server) broadcastCommandUpdate() {
+	s.commandsMu.RLock()
+	commands := make([]*CommandInfo, 0, len(s.commands))
+	for _, cmdInfo := range s.commands {
+		commands = append(commands, &CommandInfo{
+			ID:        cmdInfo.ID,
+			URL:       cmdInfo.URL,
+			Status:    cmdInfo.Status,
+			StartedAt: cmdInfo.StartedAt,
+			ExitCode:  cmdInfo.ExitCode,
+		})
+	}
+	s.commandsMu.RUnlock()
+
+	data, err := json.Marshal(map[string]interface{}{
+		"commands": commands,
+	})
+	if err != nil {
+		log.Printf("Failed to marshal commands: %v", err)
+		return
+	}
+
+	message := fmt.Sprintf("data: %s\n\n", string(data))
+
+	s.commandsSubMu.RLock()
+	for ch := range s.commandsSubscribers {
+		select {
+		case ch <- message:
+		default:
+			// Client is slow, skip
+		}
+	}
+	s.commandsSubMu.RUnlock()
+}
+
+// GET /api/commands/stream
+// SSE endpoint for real-time command updates
+func (s *Server) handleCommandsStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Create a channel for this client
+	messageChan := make(chan string, 10)
+
+	// Register subscriber
+	s.commandsSubMu.Lock()
+	s.commandsSubscribers[messageChan] = true
+	s.commandsSubMu.Unlock()
+
+	// Send initial state
+	s.commandsMu.RLock()
+	commands := make([]*CommandInfo, 0, len(s.commands))
+	for _, cmdInfo := range s.commands {
+		commands = append(commands, &CommandInfo{
+			ID:        cmdInfo.ID,
+			URL:       cmdInfo.URL,
+			Status:    cmdInfo.Status,
+			StartedAt: cmdInfo.StartedAt,
+			ExitCode:  cmdInfo.ExitCode,
+		})
+	}
+	s.commandsMu.RUnlock()
+
+	initialData, _ := json.Marshal(map[string]interface{}{
+		"commands": commands,
+	})
+	fmt.Fprintf(w, "data: %s\n\n", string(initialData))
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	// Listen for updates
+	notify := r.Context().Done()
+	for {
+		select {
+		case <-notify:
+			// Client disconnected
+			s.commandsSubMu.Lock()
+			delete(s.commandsSubscribers, messageChan)
+			s.commandsSubMu.Unlock()
+			close(messageChan)
+			return
+		case msg := <-messageChan:
+			fmt.Fprint(w, msg)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}
+}
+
+// GET /api/commands/{id}/logs/stream
+// SSE endpoint for real-time log streaming
+func (s *Server) handleCommandLogsStream(w http.ResponseWriter, r *http.Request, cmdID string) {
+	s.commandsMu.RLock()
+	cmdInfo, exists := s.commands[cmdID]
+	s.commandsMu.RUnlock()
+
+	if !exists {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "File not found",
+			"error": fmt.Sprintf("Command %s not found", cmdID),
 		})
 		return
 	}
 
-	// Serve the file
-	http.ServeFile(w, r, filePath)
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Get log channel from command
+	logChan := cmdInfo.Command.StdoutChannel()
+
+	// Stream logs
+	notify := r.Context().Done()
+	for {
+		select {
+		case <-notify:
+			// Client disconnected
+			return
+		case line, ok := <-logChan:
+			if !ok {
+				// Command finished, send completion event
+				fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				return
+			}
+			data, _ := json.Marshal(map[string]string{
+				"line": line,
+			})
+			fmt.Fprintf(w, "data: %s\n\n", string(data))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}
 }
