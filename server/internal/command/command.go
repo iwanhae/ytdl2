@@ -178,3 +178,15 @@ func (c *Command) ExitCode() int {
 	defer c.mu.Unlock()
 	return c.exitCode
 }
+
+// Logs returns all output lines from stdout and stderr.
+// This is a snapshot of the logs at the time of calling.
+func (c *Command) Logs() []string {
+	c.stdoutMu.Lock()
+	defer c.stdoutMu.Unlock()
+	
+	// Return a copy to prevent external modification
+	logs := make([]string, len(c.stdoutLines))
+	copy(logs, c.stdoutLines)
+	return logs
+}

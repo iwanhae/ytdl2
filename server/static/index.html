@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+        }
+
+        section {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        h2 {
+            margin-bottom: 16px;
+            color: #333;
+            font-size: 1.2em;
+        }
+
+        /* Download Form */
+        #url-form {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        #url-input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        #url-input:focus {
+            outline: none;
+            border-color: #007bff;
+        }
+
+        button {
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        #form-message {
+            margin-top: 10px;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        #form-message.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        #form-message.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        /* Command List */
+        .command-card {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 16px;
+            margin-bottom: 12px;
+            background: #f8f9fa;
+        }
+
+        .command-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .status-badge.running {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .command-id {
+            font-family: monospace;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .command-url {
+            color: #007bff;
+            margin-bottom: 8px;
+            word-break: break-all;
+            font-size: 14px;
+        }
+
+        .command-time {
+            color: #666;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+
+        .view-logs-btn {
+            padding: 6px 12px;
+            background: #6c757d;
+            font-size: 12px;
+        }
+
+        .view-logs-btn:hover {
+            background: #5a6268;
+        }
+
+        .logs-container {
+            margin-top: 12px;
+            padding: 12px;
+            background: #000;
+            color: #0f0;
+            font-family: monospace;
+            font-size: 12px;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .logs-container.show {
+            display: block;
+        }
+
+        .log-line {
+            margin-bottom: 4px;
+        }
+
+        #no-commands, #no-files {
+            text-align: center;
+            color: #999;
+            padding: 40px;
+        }
+
+        /* File List */
+        .file-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .file-card:last-child {
+            border-bottom: none;
+        }
+
+        .file-info {
+            flex: 1;
+        }
+
+        .file-name {
+            font-weight: bold;
+            margin-bottom: 4px;
+            color: #333;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 12px;
+            margin-right: 10px;
+        }
+
+        .file-time {
+            color: #999;
+            font-size: 11px;
+        }
+
+        .download-btn {
+            padding: 8px 16px;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .download-btn:hover {
+            background: #218838;
+        }
+    </style>
+</head>
+<body>
+    <h1>YouTube Downloader</h1>
+
+    <!-- Component 1: URL Input Form -->
+    <section id="download-form">
+        <h2>새 다운로드</h2>
+        <form id="url-form">
+            <input type="url" id="url-input" placeholder="https://youtube.com/watch?v=..." required>
+            <button type="submit" id="submit-btn">다운로드 시작</button>
+        </form>
+        <div id="form-message"></div>
+    </section>
+
+    <!-- Component 2: Running Commands List -->
+    <section id="command-list">
+        <h2>실행중인 다운로드</h2>
+        <div id="commands-container"></div>
+        <div id="no-commands" style="display: none;">실행중인 다운로드가 없습니다.</div>
+    </section>
+
+    <!-- Component 3: Downloaded Files List -->
+    <section id="file-list">
+        <h2>다운로드된 파일</h2>
+        <div id="files-container"></div>
+        <div id="no-files" style="display: none;">다운로드된 파일이 없습니다.</div>
+    </section>
+
+    <script>
+        const API_BASE = '/api';
+
+        // State
+        let pollingInterval = null;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            initDownloadForm();
+            updateCommandList();
+            updateFileList();
+            startPolling();
+        });
+
+        // Start polling
+        function startPolling() {
+            // Poll commands every 5 seconds
+            pollingInterval = setInterval(() => {
+                updateCommandList();
+            }, 5000);
+        }
+
+        // Download Form
+        function initDownloadForm() {
+            const form = document.getElementById('url-form');
+            const input = document.getElementById('url-input');
+            const message = document.getElementById('form-message');
+            const submitBtn = document.getElementById('submit-btn');
+
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const url = input.value.trim();
+
+                if (!url) {
+                    showMessage('URL을 입력해주세요.', 'error');
+                    return;
+                }
+
+                submitBtn.disabled = true;
+                submitBtn.textContent = '처리중...';
+
+                try {
+                    const response = await fetch(`${API_BASE}/yt-dlp`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url })
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        showMessage('다운로드가 시작되었습니다.', 'success');
+                        input.value = '';
+                        // Immediately update command list
+                        updateCommandList();
+                    } else {
+                        showMessage('다운로드 시작 실패: ' + (data.error || '알 수 없는 오류'), 'error');
+                    }
+                } catch (error) {
+                    showMessage('다운로드 시작 실패: ' + error.message, 'error');
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = '다운로드 시작';
+                }
+            });
+        }
+
+        function showMessage(text, type) {
+            const message = document.getElementById('form-message');
+            message.textContent = text;
+            message.className = type;
+            setTimeout(() => {
+                message.textContent = '';
+                message.className = '';
+            }, 3000);
+        }
+
+        // Command List
+        async function updateCommandList() {
+            try {
+                const response = await fetch(`${API_BASE}/commands`);
+                const data = await response.json();
+                const commands = data.commands || [];
+                const runningCommands = commands.filter(cmd => cmd.status === 'running');
+
+                renderCommandList(runningCommands);
+            } catch (error) {
+                console.error('커맨드 목록 조회 실패:', error);
+            }
+        }
+
+        function renderCommandList(commands) {
+            const container = document.getElementById('commands-container');
+            const noCommands = document.getElementById('no-commands');
+
+            if (commands.length === 0) {
+                container.innerHTML = '';
+                noCommands.style.display = 'block';
+                return;
+            }
+
+            noCommands.style.display = 'none';
+            container.innerHTML = commands.map(cmd => `
+                <div class="command-card" data-id="${cmd.id}">
+                    <div class="command-header">
+                        <span class="status-badge running">🟢 실행중</span>
+                        <span class="command-id">${cmd.id}</span>
+                    </div>
+                    <div class="command-url">${cmd.url}</div>
+                    <div class="command-time">시작: ${formatTime(cmd.started_at)}</div>
+                    <button class="view-logs-btn" data-id="${cmd.id}">로그 보기</button>
+                    <div class="logs-container" id="logs-${cmd.id}"></div>
+                </div>
+            `).join('');
+
+            // Add event listeners for log buttons
+            container.querySelectorAll('.view-logs-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const cmdId = btn.dataset.id;
+                    const logsContainer = document.getElementById(`logs-${cmdId}`);
+                    
+                    if (logsContainer.classList.contains('show')) {
+                        logsContainer.classList.remove('show');
+                        btn.textContent = '로그 보기';
+                    } else {
+                        loadAndShowLogs(cmdId);
+                        logsContainer.classList.add('show');
+                        btn.textContent = '로그 숨기';
+                    }
+                });
+            });
+        }
+
+        async function loadAndShowLogs(commandId) {
+            try {
+                const response = await fetch(`${API_BASE}/commands/${commandId}/logs`);
+                const data = await response.json();
+                const logsContainer = document.getElementById(`logs-${commandId}`);
+                
+                if (data.logs && data.logs.length > 0) {
+                    logsContainer.innerHTML = data.logs.map(log => 
+                        `<div class="log-line">${escapeHtml(log)}</div>`
+                    ).join('');
+                } else {
+                    logsContainer.innerHTML = '<div class="log-line">로그가 없습니다.</div>';
+                }
+            } catch (error) {
+                console.error('로그 조회 실패:', error);
+                const logsContainer = document.getElementById(`logs-${commandId}`);
+                logsContainer.innerHTML = '<div class="log-line" style="color: #f00;">로그를 불러올 수 없습니다.</div>';
+            }
+        }
+
+        // File List
+        async function updateFileList() {
+            try {
+                const response = await fetch(`${API_BASE}/files`);
+                const data = await response.json();
+                const files = data.files || [];
+
+                renderFileList(files);
+            } catch (error) {
+                console.error('파일 목록 조회 실패:', error);
+            }
+        }
+
+        function renderFileList(files) {
+            const container = document.getElementById('files-container');
+            const noFiles = document.getElementById('no-files');
+
+            if (files.length === 0) {
+                container.innerHTML = '';
+                noFiles.style.display = 'block';
+                return;
+            }
+
+            noFiles.style.display = 'none';
+            container.innerHTML = files.map(file => `
+                <div class="file-card">
+                    <div class="file-info">
+                        <div class="file-name">📄 ${escapeHtml(file.name)}</div>
+                        <div>
+                            <span class="file-size">${formatFileSize(file.size)}</span>
+                            <span class="file-time">다운로드: ${formatTime(file.mod_time)}</span>
+                        </div>
+                    </div>
+                    <a href="${API_BASE}/files/${encodeURIComponent(file.name)}" download class="download-btn">다운로드</a>
+                </div>
+            `).join('');
+        }
+
+        // Utils
+        function formatTime(timeString) {
+            const date = new Date(timeString);
+            return date.toLocaleString('ko-KR');
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
+
