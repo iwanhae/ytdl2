@@ -339,7 +339,8 @@ func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		// Download file
 		// Check if file exists
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		info, err := os.Stat(filePath)
+		if os.IsNotExist(err) {
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]string{
 				"error": "File not found",
@@ -347,7 +348,16 @@ func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Serve the file
-		http.ServeFile(w, r, filePath)
+		f, err := os.Open(filePath)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": fmt.Sprintf("Failed to open file: %v", err),
+			})
+			return
+		}
+		defer f.Close()
+		http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 
 	case http.MethodDelete:
 		// Delete file
