@@ -97,7 +97,7 @@ func (s *Server) handleYtDlp(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Downloading %s...", body.URL)
 
 	cmd := command.
-		New("yt-dlp", "-f", "bestvideo*+bestaudio/best", body.URL).
+		New("yt-dlp", "-f", "bestvideo*+bestaudio/best", "--extract-audio", "--audio-format", "mp3", "--keep-video", body.URL).
 		SetWorkingDirectory(s.DownloadDirectory)
 
 	if err := cmd.Execute(); err != nil {
