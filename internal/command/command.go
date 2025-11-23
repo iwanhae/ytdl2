@@ -105,13 +105,32 @@ func (c *Command) pipeToStdout(pipe io.ReadCloser) {
 	defer pipe.Close()
 
 	scanner := bufio.NewScanner(pipe)
+	// Increase buffer size to 1MB to handle long lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		c.stdoutMu.Lock()
 		c.stdoutLines = append(c.stdoutLines, line)
 		for _, sub := range c.stdoutSubscribers {
-			sub <- line
+			// Non-blocking send to prevent blocking the command execution
+			select {
+			case sub <- line:
+			default:
+				// Subscriber is slow, skip this line for them
+			}
 		}
+		c.stdoutMu.Unlock()
+	}
+
+	if err := scanner.Err(); err != nil {
+		// Log error if scanner failed (e.g. token too long)
+		// We can't easily log to the application log here without importing "log",
+		// but we can append to stdoutLines so it's visible in the UI
+		errMsg := "Error reading output: " + err.Error()
+		c.stdoutMu.Lock()
+		c.stdoutLines = append(c.stdoutLines, errMsg)
 		c.stdoutMu.Unlock()
 	}
 }
@@ -184,7 +203,7 @@ func (c *Command) ExitCode() int {
 func (c *Command) Logs() []string {
 	c.stdoutMu.Lock()
 	defer c.stdoutMu.Unlock()
-	
+
 	// Return a copy to prevent external modification
 	logs := make([]string, len(c.stdoutLines))
 	copy(logs, c.stdoutLines)
