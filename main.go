@@ -10,6 +10,7 @@ import (
 
 var (
 	downloadDirectory = getEnv("DOWNLOAD_DIRECTORY", "./data")
+	staticDirectory   = getEnv("STATIC_DIRECTORY", "./static")
 )
 
 func main() {
@@ -18,8 +19,9 @@ func main() {
 		log.Fatalf("Failed to create download directory: %v", err)
 	}
 
-	s := server.NewServer(downloadDirectory)
+	s := server.NewServer(downloadDirectory, staticDirectory)
 
+	log.Println("Starting server with SPA support...")
 	log.Println("Server is running on :8080")
 	http.ListenAndServe(":8080", s)
 }

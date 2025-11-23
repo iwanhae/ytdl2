@@ -49,6 +49,7 @@ EXPOSE 8080
 
 # Set environment variables
 ENV DOWNLOAD_DIRECTORY=/app/data
+ENV STATIC_DIRECTORY=/app/static
 VOLUME /app/data
 
 # Run the application

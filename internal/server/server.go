@@ -36,7 +36,8 @@ type Server struct {
 	commandsSubMu       sync.RWMutex
 }
 
-func NewServer(downloadDirectory string) *Server {
+func NewServer(downloadDirectory, staticDirectory string) *Server {
+	log.Printf("Initializing server with static directory: %s", staticDirectory)
 	mux := http.NewServeMux()
 	s := &Server{
 		ServeMux:            mux,
@@ -53,14 +54,34 @@ func NewServer(downloadDirectory string) *Server {
 	s.HandleFunc("/api/files/", s.handleFileOperation)
 
 	// Serve static files for non-API routes
-	staticFS := http.FileServer(http.Dir("./static"))
+	// SPA Handler: Serve index.html for any unknown route that isn't an API route
 	s.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Only serve static files if it's not an API route
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			staticFS.ServeHTTP(w, r)
-		} else {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
 			http.NotFound(w, r)
+			return
 		}
+
+		// Check if file exists in static directory
+		path := filepath.Join(staticDirectory, r.URL.Path)
+		// Prevent directory traversal
+		if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(staticDirectory)) {
+			http.NotFound(w, r)
+			return
+		}
+
+		// If it's a directory, try to serve index.html inside it, or just let ServeFile handle it (which might redirect)
+		// But for SPA, we usually want to serve the root index.html if the specific file doesn't exist.
+
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() {
+			// File exists and is not a directory, serve it
+			http.ServeFile(w, r, path)
+			return
+		}
+
+		// File doesn't exist, serve index.html
+		indexPath := filepath.Join(staticDirectory, "index.html")
+		http.ServeFile(w, r, indexPath)
 	})
 
 	return s
