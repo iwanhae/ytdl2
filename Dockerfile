@@ -42,15 +42,15 @@ COPY --from=backend-builder /app/ytdl2-server .
 COPY --from=frontend-builder /app/dist ./static
 
 # Create download directory
-RUN mkdir -p /app/data && chmod 755 /app/data
+RUN mkdir -p /data && chmod 755 /data
 
 # Expose port
 EXPOSE 8080
 
 # Set environment variables
-ENV DOWNLOAD_DIRECTORY=/app/data
+ENV DOWNLOAD_DIRECTORY=/data
 ENV STATIC_DIRECTORY=/app/static
-VOLUME /app/data
+VOLUME /data
 
 # Run the application
 CMD ["./ytdl2-server"]
