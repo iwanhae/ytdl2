@@ -354,7 +354,7 @@ func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Security: prevent directory traversal
-	if strings.Contains(path, "..") {
+	if strings.Contains(path, "/..") {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": "Invalid filename",
