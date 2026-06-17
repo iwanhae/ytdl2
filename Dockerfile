@@ -1,5 +1,5 @@
 # Build stage for Frontend
-FROM node:22-alpine AS frontend-builder
+FROM node:24-alpine AS frontend-builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY . .
 RUN npm run build
 
 # Build stage for Backend
-FROM golang:1.24-alpine AS backend-builder
+FROM golang:1.26-alpine AS backend-builder
 WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git
@@ -20,7 +20,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o ytdl2-server ./main.go
 
 # Runtime stage
-FROM alpine:latest
+FROM alpine:3.24
 
 # Install runtime dependencies
 RUN apk add --no-cache \
