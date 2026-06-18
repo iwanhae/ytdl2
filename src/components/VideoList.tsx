@@ -1,18 +1,58 @@
-import React, { useEffect, useState } from 'react';
-import { type FileInfo, getFiles, deleteFile, extractAudio } from '../lib/api';
+import { useEffect, useState } from 'react';
+import type { MouseEvent } from 'react';
+import { type FileInfo, getFiles, deleteFile, extractAudio, getFileUrl } from '../lib/api';
 import { usePlayer } from '../contexts/PlayerContext';
+
+function extOf(name: string): string {
+    const i = name.lastIndexOf('.');
+    return i >= 0 ? name.slice(i + 1).toUpperCase() : 'FILE';
+}
+
+function fmtSize(bytes: number): string {
+    if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
+    if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
+}
+
+function EqIcon() {
+    return (
+        <span className="flex h-3.5 items-end gap-[2px]" aria-hidden>
+            <span className="eq-bar h-3.5" style={{ animationDelay: '0ms' }} />
+            <span className="eq-bar h-3.5" style={{ animationDelay: '180ms' }} />
+            <span className="eq-bar h-3.5" style={{ animationDelay: '360ms' }} />
+        </span>
+    );
+}
+
+const ICON = {
+    refresh: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3" /></svg>
+    ),
+    download: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+    ),
+    note: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
+    ),
+    trash: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+    ),
+};
 
 export default function VideoList({ refreshKey }: { refreshKey?: number }) {
     const [files, setFiles] = useState<FileInfo[]>([]);
-    const { play, currentFile, setPlaylist } = usePlayer();
     const [loading, setLoading] = useState(true);
+    const [status, setStatus] = useState<string | null>(null);
+    const { play, currentFile, setPlaylist } = usePlayer();
 
     const loadFiles = async () => {
         setLoading(true);
         try {
             const data = await getFiles();
             // Sort by mod_time desc
-            const sorted = data.sort((a, b) => new Date(b.mod_time).getTime() - new Date(a.mod_time).getTime());
+            const sorted = data.sort(
+                (a, b) => new Date(b.mod_time).getTime() - new Date(a.mod_time).getTime(),
+            );
             setFiles(sorted);
             setPlaylist(sorted);
         } catch (error) {
@@ -26,105 +66,152 @@ export default function VideoList({ refreshKey }: { refreshKey?: number }) {
         loadFiles();
     }, [refreshKey]);
 
-    const handleDelete = async (e: React.MouseEvent, filename: string) => {
+    const flash = (msg: string) => {
+        setStatus(msg);
+        setTimeout(() => setStatus(null), 3000);
+    };
+
+    const handleDelete = async (e: MouseEvent, filename: string) => {
         e.stopPropagation();
         if (!confirm(`Delete ${filename}?`)) return;
         try {
             await deleteFile(filename);
             loadFiles();
-        } catch (error) {
-            alert('Failed to delete file');
+        } catch {
+            flash('Failed to delete file');
         }
     };
 
-    const handleExtract = async (e: React.MouseEvent, filename: string) => {
+    const handleExtract = async (e: MouseEvent, filename: string) => {
         e.stopPropagation();
         try {
             await extractAudio(filename);
-            alert('Extraction started');
-        } catch (error) {
-            alert('Failed to start extraction');
+            flash('Extracting audio — watch Active');
+            setTimeout(loadFiles, 2500);
+        } catch {
+            flash('Failed to start extraction');
         }
     };
 
     return (
-        <div className="space-y-4">
+        <section>
             <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold text-text">Downloaded Files</h2>
-                <button
-                    onClick={loadFiles}
-                    className="p-2 text-primary hover:bg-primary/10 rounded-full transition-colors"
-                    title="Refresh list"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3" /></svg>
-                </button>
+                <span className="silkscreen">Library</span>
+                <div className="flex items-center gap-3">
+                    {files.length > 0 && (
+                        <span className="silkscreen text-dust">
+                            {files.length} file{files.length > 1 ? 's' : ''}
+                        </span>
+                    )}
+                    <button
+                        onClick={loadFiles}
+                        className="btn-ghost"
+                        title="Refresh library"
+                        aria-label="Refresh library"
+                    >
+                        {ICON.refresh}
+                    </button>
+                </div>
             </div>
 
-            {loading && files.length === 0 ? (
-                <div className="text-center py-8 text-text-secondary">Loading files...</div>
-            ) : files.length === 0 ? (
-                <div className="text-center py-8 text-text-secondary">No files downloaded yet</div>
-            ) : (
-                <div className="space-y-2">
-                    {files.map((file) => {
-                        const isPlaying = currentFile?.name === file.name;
-                        const isAudio = file.name.endsWith('.mp3');
-
-                        return (
-                            <div
-                                key={file.name}
-                                onClick={() => play(file)}
-                                className={`
-                  group flex items-center p-3 rounded-lg cursor-pointer transition-colors
-                  ${isPlaying ? 'bg-primary/10' : 'hover:bg-surface'}
-                `}
-                            >
-                                {/* Icon */}
-                                <div className={`
-                  w-10 h-10 rounded-full flex items-center justify-center mr-4
-                  ${isPlaying ? 'bg-primary text-white' : 'bg-border text-text-secondary'}
-                `}>
-                                    {isPlaying ? (
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
-                                    ) : (
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                                    )}
-                                </div>
-
-                                {/* Info */}
-                                <div className="flex-1 min-w-0">
-                                    <h3 className={`font-medium truncate ${isPlaying ? 'text-primary' : 'text-text'}`}>
-                                        {file.name}
-                                    </h3>
-                                    <p className="text-xs text-text-secondary">
-                                        {new Date(file.mod_time).toLocaleDateString()} • {(file.size / 1024 / 1024).toFixed(1)} MB
-                                    </p>
-                                </div>
-
-                                {/* Actions */}
-                                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    {!isAudio && (
-                                        <button
-                                            onClick={(e) => handleExtract(e, file.name)}
-                                            className="p-2 text-text-secondary hover:text-primary"
-                                            title="Extract Audio"
-                                        >
-                                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
-                                        </button>
-                                    )}
-                                    <button
-                                        onClick={(e) => handleDelete(e, file.name)}
-                                        className="p-2 text-text-secondary hover:text-red-500"
-                                        title="Delete"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                                    </button>
-                                </div>
-                            </div>
-                        );
-                    })}
+            {status && (
+                <div className="mt-2 inline-flex items-center gap-1.5 chip border-amber/30 bg-amber/10 text-amber">
+                    {status}
                 </div>
             )}
-        </div>
+
+            <div className="mt-3">
+                {loading && files.length === 0 ? (
+                    <div className="py-10 font-mono text-sm text-ash">▒ reading library…</div>
+                ) : files.length === 0 ? (
+                    <div className="rounded border border-dashed border-line px-4 py-10 text-center">
+                        <div className="font-mono text-sm text-ash">▒ library empty</div>
+                        <p className="mt-2 font-sans text-sm text-dust">
+                            Paste a link above to record your first track.
+                        </p>
+                    </div>
+                ) : (
+                    <ul className="space-y-px">
+                        {files.map((file, idx) => {
+                            const isPlaying = currentFile?.name === file.name;
+                            const isAudio = file.name.endsWith('.mp3');
+
+                            return (
+                                <li key={file.name}>
+                                    <div
+                                        onClick={() => play(file)}
+                                        className={`group flex cursor-pointer items-center gap-3 rounded-md px-2.5 py-2.5 transition-colors ${
+                                            isPlaying ? 'bg-recess' : 'hover:bg-recess'
+                                        }`}
+                                    >
+                                        <div className="w-6 shrink-0 text-center">
+                                            {isPlaying ? (
+                                                <EqIcon />
+                                            ) : (
+                                                <span className="font-mono text-[11px] tabular-nums text-dust">
+                                                    {String(idx + 1).padStart(2, '0')}
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        <div className="min-w-0 flex-1">
+                                            <div
+                                                className={`truncate font-mono text-[13px] ${
+                                                    isPlaying ? 'text-amber' : 'text-ink'
+                                                }`}
+                                            >
+                                                {file.name}
+                                            </div>
+                                            <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-dust">
+                                                <span>
+                                                    {new Date(file.mod_time).toLocaleDateString()}
+                                                </span>
+                                                <span>·</span>
+                                                <span>{fmtSize(file.size)}</span>
+                                            </div>
+                                        </div>
+
+                                        <span className="chip hidden border-line text-ash sm:inline-flex">
+                                            {extOf(file.name)}
+                                        </span>
+
+                                        <div className="flex items-center gap-0.5 transition-opacity sm:opacity-0 sm:focus-within:opacity-100 sm:group-hover:opacity-100">
+                                            <a
+                                                href={getFileUrl(file.name)}
+                                                download
+                                                onClick={(e) => e.stopPropagation()}
+                                                className="btn-ghost"
+                                                title="Download file"
+                                                aria-label={`Download ${file.name}`}
+                                            >
+                                                {ICON.download}
+                                            </a>
+                                            {!isAudio && (
+                                                <button
+                                                    onClick={(e) => handleExtract(e, file.name)}
+                                                    className="btn-ghost"
+                                                    title="Extract audio"
+                                                    aria-label={`Extract audio from ${file.name}`}
+                                                >
+                                                    {ICON.note}
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={(e) => handleDelete(e, file.name)}
+                                                className="btn-ghost hover:!text-rust"
+                                                title="Delete"
+                                                aria-label={`Delete ${file.name}`}
+                                            >
+                                                {ICON.trash}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+            </div>
+        </section>
     );
 }

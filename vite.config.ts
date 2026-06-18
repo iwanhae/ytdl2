@@ -15,15 +15,21 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
+      includeAssets: ['favicon.svg', 'favicon.ico', 'apple-touch-icon.png'],
       manifest: {
-        name: 'YTDL2 App',
-        short_name: 'YTDL2',
-        description: 'A Progressive Web App built with React and Vite',
-        theme_color: '#ffffff',
-        background_color: '#ffffff',
+        name: 'ytdl2',
+        short_name: 'ytdl2',
+        description: 'Self-hosted yt-dlp deck — queue a link, watch it run, play the result.',
+        theme_color: '#0e0c0a',
+        background_color: '#0e0c0a',
         display: 'standalone',
         icons: [
+          {
+            src: 'favicon.svg',
+            sizes: 'any',
+            type: 'image/svg+xml',
+            purpose: 'any'
+          },
           {
             src: 'pwa-192x192.png',
             sizes: '192x192',
