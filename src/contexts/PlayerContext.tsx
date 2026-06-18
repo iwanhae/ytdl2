@@ -15,6 +15,7 @@ interface PlayerContextType {
     progress: number;
     duration: number;
     seek: (time: number) => void;
+    analyser: AnalyserNode | null;
 }
 
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
@@ -25,25 +26,63 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const [playlist, setPlaylist] = useState<FileInfo[]>([]);
     const [progress, setProgress] = useState(0);
     const [duration, setDuration] = useState(0);
+    const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
     const audioRef = useRef<HTMLAudioElement>(null);
+    const audioCtxRef = useRef<AudioContext | null>(null);
+
+    /**
+     * Build the Web Audio graph (element -> analyser -> output) lazily, on the
+     * first user-initiated play. The analyser drives the transport's level
+     * meter. If anything throws, audio keeps playing through the element's
+     * default output and the meter simply stays quiet.
+     */
+    const ensureGraph = useCallback((): AudioContext | null => {
+        if (audioCtxRef.current) return audioCtxRef.current;
+        const el = audioRef.current;
+        if (!el) return null;
+        try {
+            const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+            if (!Ctor) return null;
+            const ctx = new Ctor();
+            const source = ctx.createMediaElementSource(el);
+            const an = ctx.createAnalyser();
+            an.fftSize = 128;
+            an.smoothingTimeConstant = 0.82;
+            source.connect(an);
+            an.connect(ctx.destination);
+            audioCtxRef.current = ctx;
+            setAnalyser(an);
+            return ctx;
+        } catch (e) {
+            console.error('Audio graph init failed:', e);
+            return null;
+        }
+    }, []);
 
     const play = useCallback((file: FileInfo) => {
+        const ctx = ensureGraph();
+        if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
         if (currentFile?.name === file.name) {
             audioRef.current?.play();
         } else {
             setCurrentFile(file);
             // Auto-play is handled by useEffect when currentFile changes
         }
-    }, [currentFile]);
+    }, [currentFile, ensureGraph]);
 
     const pause = useCallback(() => {
         audioRef.current?.pause();
     }, []);
 
     const toggle = useCallback(() => {
-        if (isPlaying) pause();
-        else if (currentFile) audioRef.current?.play();
-    }, [isPlaying, currentFile, pause]);
+        if (isPlaying) {
+            pause();
+        } else if (currentFile) {
+            const ctx = ensureGraph();
+            if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+            audioRef.current?.play();
+        }
+    }, [isPlaying, currentFile, pause, ensureGraph]);
 
     const next = useCallback(() => {
         if (!currentFile || playlist.length === 0) return;
@@ -75,7 +114,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
                     title: currentFile.name.replace(/\.[^/.]+$/, ""),
-                    artist: 'YTDL2',
+                    artist: 'ytdl2',
                     artwork: [
                         { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }
                     ]
@@ -141,7 +180,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             audioRef,
             progress,
             duration,
-            seek
+            seek,
+            analyser
         }}>
             <audio ref={audioRef} />
             {children}

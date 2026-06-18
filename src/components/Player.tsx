@@ -1,57 +1,154 @@
+import { useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../contexts/PlayerContext';
 
+const BARS = 18;
+
+function fmt(t: number): string {
+    if (!isFinite(t) || t <= 0) return '0:00';
+    const m = Math.floor(t / 60);
+    const s = Math.floor(t % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/** Amber LED ladder driven by the live audio analyser. */
+function LevelMeter({ analyser, active }: { analyser: AnalyserNode | null; active: boolean }) {
+    const reduced = useRef(
+        typeof window !== 'undefined' &&
+            window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
+    ).current;
+    const [levels, setLevels] = useState<number[]>(() =>
+        new Array(BARS).fill(reduced ? 0.1 : 0),
+    );
+    const raf = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (!analyser || !active || reduced) {
+            if (raf.current) cancelAnimationFrame(raf.current);
+            setLevels(new Array(BARS).fill(reduced ? 0.1 : 0));
+            return;
+        }
+
+        const bins = analyser.frequencyBinCount;
+        const data = new Uint8Array(bins);
+
+        const loop = () => {
+            analyser.getByteFrequencyData(data);
+            const out = new Array(BARS);
+            // sample the lower 3/4 of the spectrum, where the music lives
+            for (let i = 0; i < BARS; i++) {
+                const idx = Math.floor((i / BARS) * (bins * 0.75));
+                out[i] = data[idx] / 255;
+            }
+            setLevels(out);
+            raf.current = requestAnimationFrame(loop);
+        };
+        raf.current = requestAnimationFrame(loop);
+
+        return () => {
+            if (raf.current) cancelAnimationFrame(raf.current);
+        };
+    }, [analyser, active, reduced]);
+
+    return (
+        <div className="flex h-6 items-end gap-[2px]" aria-hidden>
+            {levels.map((v, i) => {
+                const lit = v > 0.02;
+                return (
+                    <span
+                        key={i}
+                        className="w-[3px] rounded-sm"
+                        style={{
+                            height: `${Math.max(8, v * 100)}%`,
+                            background: lit ? 'var(--color-amber)' : 'var(--color-line-bright)',
+                            opacity: lit ? 0.45 + v * 0.55 : 0.5,
+                        }}
+                    />
+                );
+            })}
+        </div>
+    );
+}
+
 export default function Player() {
-    const { currentFile, isPlaying, toggle, next, prev, progress, duration, seek } = usePlayer();
+    const { currentFile, isPlaying, toggle, next, prev, progress, duration, seek, analyser } =
+        usePlayer();
 
     if (!currentFile) return null;
 
-    const formatTime = (time: number) => {
-        const minutes = Math.floor(time / 60);
-        const seconds = Math.floor(time % 60);
-        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    const pct = duration ? (progress / duration) * 100 : 0;
+    const title = currentFile.name.replace(/\.[^.]+$/, '');
+
+    const onScrub = (e: React.MouseEvent<HTMLDivElement>) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const ratio = (e.clientX - rect.left) / rect.width;
+        seek(ratio * duration);
     };
 
     return (
-        <div className="fixed bottom-0 left-0 right-0 bg-surface border-t border-border p-4 backdrop-blur-lg bg-opacity-95">
-            <div className="max-w-2xl mx-auto">
-                {/* Progress Bar */}
-                <div className="w-full h-1 bg-border rounded-full mb-4 cursor-pointer group"
-                    onClick={(e) => {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const x = e.clientX - rect.left;
-                        const percentage = x / rect.width;
-                        seek(percentage * duration);
-                    }}>
-                    <div className="h-full bg-primary rounded-full relative group-hover:bg-blue-400 transition-colors"
-                        style={{ width: `${(progress / duration) * 100}%` }}>
-                        <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 shadow-md transition-opacity" />
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-void/92 backdrop-blur-lg">
+            <div className="mx-auto max-w-2xl px-4 py-3 sm:px-6">
+                {/* scrubber */}
+                <div className="flex items-center gap-3">
+                    <span className="w-10 text-right font-mono text-[11px] tabular-nums text-ash">
+                        {fmt(progress)}
+                    </span>
+                    <div
+                        onClick={onScrub}
+                        onKeyDown={(e) => {
+                            if (e.key === 'ArrowRight') seek(Math.min(duration, progress + 5));
+                            else if (e.key === 'ArrowLeft') seek(Math.max(0, progress - 5));
+                        }}
+                        role="slider"
+                        aria-label="Seek"
+                        aria-valuenow={Math.round(pct)}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        tabIndex={0}
+                        className="group relative w-full cursor-pointer py-2"
+                    >
+                        <div className="h-[3px] rounded-full bg-line">
+                            <div
+                                className="relative h-full rounded-full bg-amber"
+                                style={{ width: `${pct}%` }}
+                            >
+                                <span className="absolute right-0 top-1/2 h-3 w-3 -translate-y-1/2 translate-x-1/2 rounded-full bg-amber-soft opacity-0 shadow-[0_0_8px_rgba(255,176,0,0.7)] transition-opacity group-hover:opacity-100" />
+                            </div>
+                        </div>
                     </div>
+                    <span className="w-10 font-mono text-[11px] tabular-nums text-ash">
+                        {fmt(duration)}
+                    </span>
                 </div>
 
-                <div className="flex items-center justify-between">
-                    {/* Info */}
-                    <div className="flex-1 min-w-0 pr-4">
-                        <h3 className="text-sm font-bold text-text truncate">{currentFile.name}</h3>
-                        <p className="text-xs text-text-secondary">{formatTime(progress)} / {formatTime(duration)}</p>
+                {/* transport */}
+                <div className="mt-1 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                        <div className="silkscreen text-dust">Now playing</div>
+                        <div className="truncate font-mono text-[13px] text-ink">{title}</div>
                     </div>
 
-                    {/* Controls */}
-                    <div className="flex items-center gap-4">
-                        <button onClick={prev} className="text-text-secondary hover:text-text transition-colors">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg>
+                    <div className="flex items-center gap-1">
+                        <button onClick={prev} className="btn-ghost" aria-label="Previous">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20" /><rect x="5" y="5" width="1.6" height="14" /></svg>
                         </button>
-
-                        <button onClick={toggle} className="w-10 h-10 flex items-center justify-center bg-primary rounded-full text-white hover:bg-blue-500 transition-colors shadow-lg">
+                        <button
+                            onClick={toggle}
+                            className="flex h-10 w-10 items-center justify-center rounded-full bg-amber text-void shadow-[0_0_14px_rgba(255,176,0,0.4)] transition-colors hover:bg-amber-soft"
+                            aria-label={isPlaying ? 'Pause' : 'Play'}
+                        >
                             {isPlaying ? (
-                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" /><rect x="14" y="5" width="4" height="14" /></svg>
                             ) : (
-                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4" /></svg>
                             )}
                         </button>
-
-                        <button onClick={next} className="text-text-secondary hover:text-text transition-colors">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+                        <button onClick={next} className="btn-ghost" aria-label="Next">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4" /><rect x="17.4" y="5" width="1.6" height="14" /></svg>
                         </button>
+                    </div>
+
+                    <div className="hidden w-28 shrink-0 sm:block">
+                        <LevelMeter analyser={analyser} active={isPlaying} />
                     </div>
                 </div>
             </div>
