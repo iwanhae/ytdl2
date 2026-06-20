@@ -10,19 +10,26 @@ function fmt(t: number): string {
     return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-/** Amber LED ladder driven by the live audio analyser. */
+/**
+ * Amber LED ladder. On desktop it reads the live audio analyser; on touch
+ * devices (no analyser — see PlayerContext) it falls back to a decorative
+ * CSS animation so the meter still reads "alive" without a Web Audio graph.
+ */
 function LevelMeter({ analyser, active }: { analyser: AnalyserNode | null; active: boolean }) {
     const reduced = useRef(
         typeof window !== 'undefined' &&
             window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
     ).current;
+    const decorative = !analyser;
     const [levels, setLevels] = useState<number[]>(() =>
         new Array(BARS).fill(reduced ? 0.1 : 0),
     );
     const raf = useRef<number | null>(null);
 
+    // Real analyser path — desktop only.
     useEffect(() => {
-        if (!analyser || !active || reduced) {
+        if (decorative || !analyser) return;
+        if (!active || reduced) {
             if (raf.current) cancelAnimationFrame(raf.current);
             setLevels(new Array(BARS).fill(reduced ? 0.1 : 0));
             return;
@@ -47,7 +54,33 @@ function LevelMeter({ analyser, active }: { analyser: AnalyserNode | null; activ
         return () => {
             if (raf.current) cancelAnimationFrame(raf.current);
         };
-    }, [analyser, active, reduced]);
+    }, [analyser, active, reduced, decorative]);
+
+    // Decorative path — touch devices (no analyser). Pure CSS, no audio graph.
+    if (decorative) {
+        const animate = active && !reduced;
+        return (
+            <div className="flex h-6 items-end gap-[2px]" aria-hidden>
+                {Array.from({ length: BARS }, (_, i) => (
+                    <span
+                        key={i}
+                        className="meter-bar"
+                        style={
+                            animate
+                                ? {
+                                      animation: `meter ${440 + (i % 4) * 130}ms ease-in-out ${i * 45}ms infinite`,
+                                  }
+                                : {
+                                      transform: 'scaleY(0.2)',
+                                      opacity: 0.4,
+                                      background: 'var(--color-line-bright)',
+                                  }
+                        }
+                    />
+                ))}
+            </div>
+        );
+    }
 
     return (
         <div className="flex h-6 items-end gap-[2px]" aria-hidden>
@@ -56,7 +89,7 @@ function LevelMeter({ analyser, active }: { analyser: AnalyserNode | null; activ
                 return (
                     <span
                         key={i}
-                        className="w-[3px] rounded-sm"
+                        className="meter-bar"
                         style={{
                             height: `${Math.max(8, v * 100)}%`,
                             background: lit ? 'var(--color-amber)' : 'var(--color-line-bright)',

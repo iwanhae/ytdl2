@@ -18,6 +18,19 @@ interface PlayerContextType {
     analyser: AnalyserNode | null;
 }
 
+/**
+ * Touch-primary device (phone/tablet). These platforms suspend the
+ * AudioContext in the background, so we keep a plain media element there to
+ * preserve background/lock-screen playback. Desktops — including touch-screen
+ * laptops, which report a fine primary pointer — get the real analyser graph.
+ */
+function isMobileDevice(): boolean {
+    if (typeof window === 'undefined') return false;
+    const coarse = window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
+    const ua = navigator.userAgent || '';
+    return coarse || /Mobi|Android|iPhone|iPod/i.test(ua);
+}
+
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
@@ -32,12 +45,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
     /**
      * Build the Web Audio graph (element -> analyser -> output) lazily, on the
-     * first user-initiated play. The analyser drives the transport's level
-     * meter. If anything throws, audio keeps playing through the element's
-     * default output and the meter simply stays quiet.
+     * first user-initiated play — desktop only. On touch devices we skip this
+     * entirely and keep a plain media element: createMediaElementSource
+     * captures the element's output into the AudioContext, and mobile browsers
+     * suspend that context in the background (WebKit #231105), which kills
+     * background/lock-screen playback. Desktop keeps the real analyser meter.
      */
     const ensureGraph = useCallback((): AudioContext | null => {
         if (audioCtxRef.current) return audioCtxRef.current;
+        if (isMobileDevice()) return null;
         const el = audioRef.current;
         if (!el) return null;
         try {

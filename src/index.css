@@ -201,6 +201,16 @@
     transform: scaleY(0.7);
     animation: eq 0.9s ease-in-out infinite;
   }
+
+  /* transport level-meter bar: real analyser heights (desktop) or a
+     decorative CSS animation (mobile, where there is no analyser) */
+  .meter-bar {
+    width: 3px;
+    height: 100%;
+    background: var(--color-amber);
+    border-radius: 1px;
+    transform-origin: bottom;
+  }
 }
 
 @keyframes crt-scan {
@@ -220,12 +230,18 @@
   0%, 100% { transform: scaleY(0.3); }
   50% { transform: scaleY(1); }
 }
+@keyframes meter {
+  0%   { transform: scaleY(0.2); opacity: 0.45; }
+  50%  { transform: scaleY(1);   opacity: 1; }
+  100% { transform: scaleY(0.3); opacity: 0.5; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .crt::before,
   .rec-dot,
   .caret,
-  .eq-bar {
+  .eq-bar,
+  .meter-bar {
     animation: none !important;
   }
   .rec-dot {
