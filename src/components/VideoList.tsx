@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { MouseEvent } from 'react';
-import { type FileInfo, getFiles, deleteFile, extractAudio, getFileUrl } from '../lib/api';
+import { type FileInfo, type Category, type Scope, getFiles, deleteFile, extractAudio, setCategory, getFileUrl } from '../lib/api';
 import { usePlayer } from '../contexts/PlayerContext';
 
 function extOf(name: string): string {
@@ -14,6 +14,16 @@ function fmtSize(bytes: number): string {
     return `${Math.max(1, Math.round(bytes / 1e3))} KB`;
 }
 
+function fmtDuration(seconds?: number): string {
+    if (!seconds || !isFinite(seconds) || seconds <= 0) return '';
+    const s = Math.floor(seconds % 60);
+    const m = Math.floor((seconds / 60) % 60);
+    const h = Math.floor(seconds / 3600);
+    const ss = String(s).padStart(2, '0');
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${ss}`;
+    return `${m}:${ss}`;
+}
+
 function EqIcon() {
     return (
         <span className="flex h-3.5 items-end gap-[2px]" aria-hidden>
@@ -23,6 +33,9 @@ function EqIcon() {
         </span>
     );
 }
+
+const SCOPES: Scope[] = ['all', 'music', 'podcast'];
+const SCOPE_LABEL: Record<Scope, string> = { all: 'All', music: 'Music', podcast: 'Podcasts' };
 
 const ICON = {
     refresh: (
@@ -34,16 +47,18 @@ const ICON = {
     note: (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
     ),
+    tag: (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L3 13V3h10z" /><circle cx="7.5" cy="7.5" r="1.5" /></svg>
+    ),
     trash: (
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
     ),
 };
 
 export default function VideoList({ refreshKey }: { refreshKey?: number }) {
-    const [files, setFiles] = useState<FileInfo[]>([]);
     const [loading, setLoading] = useState(true);
     const [status, setStatus] = useState<string | null>(null);
-    const { play, currentFile, setPlaylist } = usePlayer();
+    const { play, currentFile, playlist, queue, scope, setScope, setPlaylist } = usePlayer();
 
     const loadFiles = async () => {
         setLoading(true);
@@ -53,7 +68,6 @@ export default function VideoList({ refreshKey }: { refreshKey?: number }) {
             const sorted = data.sort(
                 (a, b) => new Date(b.mod_time).getTime() - new Date(a.mod_time).getTime(),
             );
-            setFiles(sorted);
             setPlaylist(sorted);
         } catch (error) {
             console.error('Failed to load files:', error);
@@ -93,14 +107,26 @@ export default function VideoList({ refreshKey }: { refreshKey?: number }) {
         }
     };
 
+    // Toggle a track between music/podcast (manual override of the guess).
+    const handleTag = async (e: MouseEvent, file: FileInfo) => {
+        e.stopPropagation();
+        const target: Category = file.category === 'music' ? 'podcast' : 'music';
+        try {
+            await setCategory(file.name, target);
+            loadFiles();
+        } catch {
+            flash('Failed to update category');
+        }
+    };
+
     return (
         <section>
             <div className="flex items-center justify-between">
                 <span className="silkscreen">Library</span>
                 <div className="flex items-center gap-3">
-                    {files.length > 0 && (
+                    {playlist.length > 0 && (
                         <span className="silkscreen text-dust">
-                            {files.length} file{files.length > 1 ? 's' : ''}
+                            {queue.length} track{queue.length !== 1 ? 's' : ''}
                         </span>
                     )}
                     <button
@@ -114,6 +140,27 @@ export default function VideoList({ refreshKey }: { refreshKey?: number }) {
                 </div>
             </div>
 
+            {/* scope filter — also scopes the play queue */}
+            {playlist.length > 0 && (
+                <div className="mt-3 flex items-center gap-1.5">
+                    {SCOPES.map((s) => {
+                        const active = scope === s;
+                        return (
+                            <button
+                                key={s}
+                                onClick={() => setScope(s)}
+                                className={`chip uppercase tracking-wider ${
+                                    active ? 'border-amber text-amber' : 'border-line text-ash hover:text-ink'
+                                }`}
+                                aria-pressed={active}
+                            >
+                                {SCOPE_LABEL[s]}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+
             {status && (
                 <div className="mt-2 inline-flex items-center gap-1.5 chip border-amber/30 bg-amber/10 text-amber">
                     {status}
@@ -121,20 +168,32 @@ export default function VideoList({ refreshKey }: { refreshKey?: number }) {
             )}
 
             <div className="mt-3">
-                {loading && files.length === 0 ? (
+                {loading && queue.length === 0 ? (
                     <div className="py-10 font-mono text-sm text-ash">▒ reading library…</div>
-                ) : files.length === 0 ? (
+                ) : queue.length === 0 ? (
                     <div className="rounded border border-dashed border-line px-4 py-10 text-center">
-                        <div className="font-mono text-sm text-ash">▒ library empty</div>
-                        <p className="mt-2 font-sans text-sm text-dust">
-                            Paste a link above to record your first track.
-                        </p>
+                        {playlist.length > 0 ? (
+                            <>
+                                <div className="font-mono text-sm text-ash">▒ no {scope} here</div>
+                                <p className="mt-2 font-sans text-sm text-dust">
+                                    Switch scope or tag a track to change its category.
+                                </p>
+                            </>
+                        ) : (
+                            <>
+                                <div className="font-mono text-sm text-ash">▒ library empty</div>
+                                <p className="mt-2 font-sans text-sm text-dust">
+                                    Paste a link above to record your first track.
+                                </p>
+                            </>
+                        )}
                     </div>
                 ) : (
                     <ul className="space-y-px">
-                        {files.map((file, idx) => {
+                        {queue.map((file, idx) => {
                             const isPlaying = currentFile?.name === file.name;
                             const isAudio = file.name.endsWith('.mp3');
+                            const dur = fmtDuration(file.duration);
 
                             return (
                                 <li key={file.name}>
@@ -168,8 +227,26 @@ export default function VideoList({ refreshKey }: { refreshKey?: number }) {
                                                 </span>
                                                 <span>·</span>
                                                 <span>{fmtSize(file.size)}</span>
+                                                {dur && (
+                                                    <>
+                                                        <span>·</span>
+                                                        <span>{dur}</span>
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
+
+                                        {file.category && (
+                                            <span
+                                                className={`chip hidden uppercase tracking-wider sm:inline-flex ${
+                                                    file.category === 'music'
+                                                        ? 'border-amber/40 text-amber'
+                                                        : 'border-teal/40 text-teal'
+                                                }`}
+                                            >
+                                                {file.category === 'music' ? 'MUSIC' : 'POD'}
+                                            </span>
+                                        )}
 
                                         <span className="chip hidden border-line text-ash sm:inline-flex">
                                             {extOf(file.name)}
@@ -186,6 +263,14 @@ export default function VideoList({ refreshKey }: { refreshKey?: number }) {
                                             >
                                                 {ICON.download}
                                             </a>
+                                            <button
+                                                onClick={(e) => handleTag(e, file)}
+                                                className="btn-ghost"
+                                                title={`Category: ${file.category ?? 'untagged'} (click to change)`}
+                                                aria-label={`Toggle category for ${file.name}`}
+                                            >
+                                                {ICON.tag}
+                                            </button>
                                             {!isAudio && (
                                                 <button
                                                     onClick={(e) => handleExtract(e, file.name)}

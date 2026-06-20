@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iwanhae/ytdl2/internal/command"
+	"github.com/iwanhae/ytdl2/internal/library"
 )
 
 type CommandInfo struct {
@@ -28,6 +29,8 @@ type Server struct {
 	*http.ServeMux
 
 	DownloadDirectory   string
+	library             *library.Store
+	categoryThreshold   float64 // seconds; >= this is guessed "podcast"
 	commands            map[string]*CommandInfo
 	commandsMu          sync.RWMutex
 	commandCounter      int
@@ -36,12 +39,14 @@ type Server struct {
 	commandsSubMu       sync.RWMutex
 }
 
-func NewServer(downloadDirectory, staticDirectory string) *Server {
+func NewServer(downloadDirectory, staticDirectory string, categoryThreshold float64) *Server {
 	log.Printf("Initializing server with static directory: %s", staticDirectory)
 	mux := http.NewServeMux()
 	s := &Server{
 		ServeMux:            mux,
 		DownloadDirectory:   downloadDirectory,
+		library:             library.Load(filepath.Join(downloadDirectory, ".ytdl2", "library.json")),
+		categoryThreshold:   categoryThreshold,
 		commands:            make(map[string]*CommandInfo),
 		commandsSubscribers: make(map[chan string]bool),
 	}
@@ -85,6 +90,12 @@ func NewServer(downloadDirectory, staticDirectory string) *Server {
 	})
 
 	return s
+}
+
+// ScanLibrary classifies any untagged files (probing duration + guessing
+// category). Run on a goroutine at startup to migrate a pre-existing library.
+func (s *Server) ScanLibrary() {
+	go s.library.ScanAndProbe(s.DownloadDirectory, s.categoryThreshold)
 }
 
 func (s *Server) nextCommandID() string {
@@ -153,6 +164,12 @@ func (s *Server) handleYtDlp(w http.ResponseWriter, r *http.Request) {
 		// Wait for command to finish
 		cmd.Wait()
 		exitCode := cmd.ExitCode()
+
+		// Classify any newly-landed files before signalling completion, so the
+		// client refresh (triggered by the broadcast below) already sees them.
+		if exitCode == 0 {
+			s.library.ScanAndProbe(s.DownloadDirectory, s.categoryThreshold)
+		}
 
 		s.commandsMu.Lock()
 		if exitCode == 0 {
@@ -273,9 +290,11 @@ func (s *Server) handleCommandLogs(w http.ResponseWriter, r *http.Request) {
 
 // FileInfo represents file information
 type FileInfo struct {
-	Name    string    `json:"name"`
-	Size    int64     `json:"size"`
-	ModTime time.Time `json:"mod_time"`
+	Name     string    `json:"name"`
+	Size     int64     `json:"size"`
+	ModTime  time.Time `json:"mod_time"`
+	Category string    `json:"category,omitempty"` // "music" | "podcast"
+	Duration float64   `json:"duration,omitempty"` // seconds
 }
 
 // GET /api/files
@@ -293,6 +312,13 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// Hide dotfiles and the .ytdl2 sidecar dir from the library listing.
+		if strings.HasPrefix(d.Name(), ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			return nil
 		}
@@ -307,11 +333,18 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		files = append(files, FileInfo{
+		fi := FileInfo{
 			Name:    relPath,
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
-		})
+		}
+		// Enrich from the store (pure read — probing happens at completion time).
+		if t, ok := s.library.Get(relPath); ok {
+			fi.Category = string(t.Category)
+			fi.Duration = t.Duration
+		}
+
+		files = append(files, fi)
 
 		return nil
 	})
@@ -335,6 +368,7 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 // GET /api/files/{filename} - Download file
 // DELETE /api/files/{filename} - Delete file
 // POST /api/files/{filename}/extract-audio - Extract audio to MP3
+// POST /api/files/{filename}/category - Override music/podcast category
 func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 	// Extract filename from path: /api/files/{filename}
 	path := strings.TrimPrefix(r.URL.Path, "/api/files/")
@@ -353,16 +387,22 @@ func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security: prevent directory traversal
-	if strings.Contains(path, "/..") {
+	// Check if this is a set-category request
+	if strings.HasSuffix(path, "/category") {
+		filename := strings.TrimSuffix(path, "/category")
+		s.handleSetCategory(w, r, filename)
+		return
+	}
+
+	// Security: resolve within the download directory and block traversal.
+	filePath, err := s.safePath(path)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": "Invalid filename",
 		})
 		return
 	}
-
-	filePath := filepath.Join(s.DownloadDirectory, path)
 
 	switch r.Method {
 	case http.MethodGet:
@@ -407,6 +447,11 @@ func (s *Server) handleFileOperation(w http.ResponseWriter, r *http.Request) {
 				"error": fmt.Sprintf("Failed to delete file: %v", err),
 			})
 			return
+		}
+
+		// Drop any cached metadata for this file (best-effort).
+		if err := s.library.Delete(path); err != nil {
+			log.Printf("Failed to prune library entry for %s: %v", path, err)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -574,6 +619,102 @@ func (s *Server) handleCommandLogsStream(w http.ResponseWriter, r *http.Request,
 	}
 }
 
+// safePath resolves filename under the download directory, rejecting traversal
+// and access to the .ytdl2 sidecar dir. It mirrors the SPA handler's pattern
+// (filepath.Clean + prefix check), which the previous "/.." substring checks
+// did not fully cover.
+func (s *Server) safePath(filename string) (string, error) {
+	if filename == "" || strings.ContainsRune(filename, 0) {
+		return "", fmt.Errorf("invalid filename")
+	}
+	base := filepath.Clean(s.DownloadDirectory)
+	clean := filepath.Clean(filepath.Join(base, filename))
+	if clean != base && !strings.HasPrefix(clean, base+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid filename")
+	}
+	if filename == ".ytdl2" || strings.HasPrefix(filename, ".ytdl2/") {
+		return "", fmt.Errorf("forbidden path")
+	}
+	return clean, nil
+}
+
+// POST /api/files/{filename}/category
+// Body: {"category": "music" | "podcast"}
+// Manually overrides a track's category (source becomes "manual", which the
+// auto-guesser never overwrites). Existing duration is preserved.
+func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request, filename string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Method not allowed",
+		})
+		return
+	}
+
+	filePath, err := s.safePath(filename)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Invalid filename",
+		})
+		return
+	}
+
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "File not found",
+		})
+		return
+	}
+
+	var body struct {
+		Category string `json:"category"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": fmt.Sprintf("Invalid body: %v", err),
+		})
+		return
+	}
+
+	cat := library.Category(body.Category)
+	if !cat.Valid() {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "category must be \"music\" or \"podcast\"",
+		})
+		return
+	}
+
+	// Preserve any probed duration.
+	var duration float64
+	if t, ok := s.library.Get(filename); ok {
+		duration = t.Duration
+	}
+	if err := s.library.Set(filename, library.Track{
+		Category: cat,
+		Source:   library.SourceManual,
+		Duration: duration,
+	}); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": fmt.Sprintf("Failed to persist category: %v", err),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"name":     filename,
+		"category": string(cat),
+		"source":   string(library.SourceManual),
+		"duration": duration,
+	})
+}
+
 // POST /api/files/{filename}/extract-audio
 // Extracts audio from video file to MP3 format
 // If MP3 already exists, returns its info
@@ -587,17 +728,15 @@ func (s *Server) handleExtractAudio(w http.ResponseWriter, r *http.Request, file
 		return
 	}
 
-	// Security: prevent directory traversal
-	if strings.Contains(filename, "..") {
+	// Security: resolve within the download directory and block traversal.
+	sourceFilePath, err := s.safePath(filename)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{
 			"error": "Invalid filename",
 		})
 		return
 	}
-
-	// Get source file path
-	sourceFilePath := filepath.Join(s.DownloadDirectory, filename)
 
 	// Check if source file exists
 	if _, err := os.Stat(sourceFilePath); os.IsNotExist(err) {
@@ -611,7 +750,7 @@ func (s *Server) handleExtractAudio(w http.ResponseWriter, r *http.Request, file
 	// Generate MP3 filename (replace extension with .mp3)
 	ext := filepath.Ext(filename)
 	mp3Filename := strings.TrimSuffix(filename, ext) + ".mp3"
-	mp3FilePath := filepath.Join(s.DownloadDirectory, mp3Filename)
+	mp3FilePath := strings.TrimSuffix(sourceFilePath, ext) + ".mp3"
 
 	// Check if MP3 already exists
 	if info, err := os.Stat(mp3FilePath); err == nil {
@@ -671,6 +810,12 @@ func (s *Server) handleExtractAudio(w http.ResponseWriter, r *http.Request, file
 		// Wait for command to finish
 		cmd.Wait()
 		exitCode := cmd.ExitCode()
+
+		// Classify any newly-landed files before signalling completion, so the
+		// client refresh (triggered by the broadcast below) already sees them.
+		if exitCode == 0 {
+			s.library.ScanAndProbe(s.DownloadDirectory, s.categoryThreshold)
+		}
 
 		s.commandsMu.Lock()
 		if exitCode == 0 {

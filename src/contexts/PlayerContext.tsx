@@ -1,10 +1,13 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { type FileInfo, getFileUrl } from '../lib/api';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { type FileInfo, type Scope, getFileUrl } from '../lib/api';
 
 interface PlayerContextType {
     currentFile: FileInfo | null;
     isPlaying: boolean;
     playlist: FileInfo[];
+    queue: FileInfo[];
+    scope: Scope;
+    setScope: (scope: Scope) => void;
     play: (file: FileInfo) => void;
     pause: () => void;
     toggle: () => void;
@@ -37,11 +40,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const [currentFile, setCurrentFile] = useState<FileInfo | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [playlist, setPlaylist] = useState<FileInfo[]>([]);
+    const [scope, setScope] = useState<Scope>('all');
     const [progress, setProgress] = useState(0);
     const [duration, setDuration] = useState(0);
     const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
     const audioRef = useRef<HTMLAudioElement>(null);
     const audioCtxRef = useRef<AudioContext | null>(null);
+
+    // The play queue is the playlist filtered to the active scope. next/prev
+    // and auto-advance walk this, so listening never crosses categories.
+    const queue = useMemo(
+        () => (scope === 'all' ? playlist : playlist.filter((f) => f.category === scope)),
+        [playlist, scope],
+    );
 
     /**
      * Build the Web Audio graph (element -> analyser -> output) lazily, on the
@@ -101,18 +112,24 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }, [isPlaying, currentFile, pause, ensureGraph]);
 
     const next = useCallback(() => {
-        if (!currentFile || playlist.length === 0) return;
-        const currentIndex = playlist.findIndex(f => f.name === currentFile.name);
-        if (currentIndex === -1 || currentIndex === playlist.length - 1) return;
-        play(playlist[currentIndex + 1]);
-    }, [currentFile, playlist, play]);
+        if (queue.length === 0) return;
+        const currentIndex = currentFile ? queue.findIndex((f) => f.name === currentFile.name) : -1;
+        // If the current track is outside the active scope, jump to the top of
+        // the queue. We don't interrupt mid-play; this fires on Next/end-of-track.
+        if (currentIndex === -1) {
+            play(queue[0]);
+            return;
+        }
+        if (currentIndex === queue.length - 1) return;
+        play(queue[currentIndex + 1]);
+    }, [currentFile, queue, play]);
 
     const prev = useCallback(() => {
-        if (!currentFile || playlist.length === 0) return;
-        const currentIndex = playlist.findIndex(f => f.name === currentFile.name);
-        if (currentIndex <= 0) return;
-        play(playlist[currentIndex - 1]);
-    }, [currentFile, playlist, play]);
+        if (queue.length === 0) return;
+        const currentIndex = currentFile ? queue.findIndex((f) => f.name === currentFile.name) : -1;
+        if (currentIndex <= 0) return; // nothing previous in scope
+        play(queue[currentIndex - 1]);
+    }, [currentFile, queue, play]);
 
     const seek = useCallback((time: number) => {
         if (audioRef.current) {
@@ -187,6 +204,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
             currentFile,
             isPlaying,
             playlist,
+            queue,
+            scope,
+            setScope,
             play,
             pause,
             toggle,

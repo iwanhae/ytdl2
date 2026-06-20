@@ -103,13 +103,14 @@ function LevelMeter({ analyser, active }: { analyser: AnalyserNode | null; activ
 }
 
 export default function Player() {
-    const { currentFile, isPlaying, toggle, next, prev, progress, duration, seek, analyser } =
+    const { currentFile, isPlaying, toggle, next, prev, progress, duration, seek, analyser, scope } =
         usePlayer();
 
     if (!currentFile) return null;
 
     const pct = duration ? (progress / duration) * 100 : 0;
     const title = currentFile.name.replace(/\.[^.]+$/, '');
+    const scopeLabel = scope === 'all' ? null : scope === 'music' ? 'MUSIC' : 'PODCASTS';
 
     const onScrub = (e: React.MouseEvent<HTMLDivElement>) => {
         const rect = e.currentTarget.getBoundingClientRect();
@@ -156,7 +157,9 @@ export default function Player() {
                 {/* transport */}
                 <div className="mt-1 flex items-center justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                        <div className="silkscreen text-dust">Now playing</div>
+                        <div className="silkscreen text-dust">
+                            Now playing{scopeLabel && <span className="text-amber"> · {scopeLabel}</span>}
+                        </div>
                         <div className="truncate font-mono text-[13px] text-ink">{title}</div>
                     </div>
 

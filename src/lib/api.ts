@@ -1,5 +1,8 @@
 export const API_BASE = '/api';
 
+export type Category = 'music' | 'podcast';
+export type Scope = 'all' | Category;
+
 export interface Command {
     id: string;
     url: string;
@@ -12,6 +15,8 @@ export interface FileInfo {
     name: string;
     size: number;
     mod_time: string;
+    category?: Category;
+    duration?: number; // seconds
 }
 
 export interface AudioExtractionResponse {
@@ -55,6 +60,31 @@ export async function extractAudio(filename: string): Promise<AudioExtractionRes
     const response = await fetch(`${API_BASE}/files/${encodeURIComponent(filename)}/extract-audio`, {
         method: 'POST',
     });
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to extract audio');
+    }
+    return response.json();
+}
+
+export interface CategoryResponse {
+    name: string;
+    category: Category;
+    source: 'guessed' | 'manual';
+    duration?: number;
+    error?: string;
+}
+
+export async function setCategory(filename: string, category: Category): Promise<CategoryResponse> {
+    const response = await fetch(`${API_BASE}/files/${encodeURIComponent(filename)}/category`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category }),
+    });
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to set category');
+    }
     return response.json();
 }
 
